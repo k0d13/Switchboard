@@ -1,0 +1,76 @@
+{
+  // Editor
+  "editor.formatOnSave": true,
+  "editor.insertSpaces": true,
+  "editor.rulers": [100],
+  "editor.tabSize": 2,
+
+  // Explorer
+  "explorer.compactFolders": true,
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "package.json": "pnpm-lock.yaml, pnpm-workspace.yaml, .npmrc",
+    "Cargo.toml": "Cargo.lock, build.rs",
+    "tsconfig.json": "*-env.d.ts",
+    "vite.config.ts": "svelte.config.js"
+  },
+
+  // Files
+  "files.eol": "\n",
+  "files.watcherExclude": {
+    "**/dist": true,
+    "**/src-tauri/target": true,
+    "**/src-tauri/gen": true
+  },
+  "search.exclude": {
+    "**/dist": true,
+    "**/src-tauri/target": true,
+    "**/src-tauri/gen": true
+  },
+
+  // Svelte
+  "[svelte]": {
+    "editor.defaultFormatter": "svelte.svelte-vscode"
+  },
+
+  // Rust
+  "rust-analyzer.linkedProjects": ["src-tauri/Cargo.toml"],
+  "rust-analyzer.check.command": "clippy",
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.tabSize": 4
+  },
+
+  // Icons
+  "material-icon-theme.folders.associations": {
+    "src-tauri": "rust",
+    "core": "core",
+    "features": "plugin",
+    "platform": "windows"
+  },
+
+  // Better TODO Tree
+  "better-todo-tree.general.tags": ["=====", "TODO"],
+  "better-todo-tree.highlights.customHighlight": {
+    "=====": {
+      "type": "whole-line",
+      "icon": "bookmark",
+      "background": "#00000000",
+      "foreground": "#dadada",
+      "iconColour": "#dadada",
+      "gutterIcon": true,
+      "hideFromTree": true
+    },
+    "TODO": {
+      "type": "whole-line",
+      "icon": "check",
+      "background": "#00000000",
+      "foreground": "#ff9900",
+      "iconColour": "#ff9900",
+      "gutterIcon": true
+    }
+  },
+
+  // Code Spell Checker
+  "cSpell.language": "en-AU"
+}
