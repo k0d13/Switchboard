@@ -2,8 +2,9 @@
 //! client and the Discord pipe, and is the only thing that talks to either. Everything else changes
 //! the shared flags and nudges it, and it notices within half a second.
 //!
-//! The sign-in is shared with Xbox mode (see `xbox_live`). Xbox mode also tells this feature
-//! whether the Xbox is on, so it only polls Xbox Live while it is.
+//! The sign-in comes from the Xbox account (`xbox_live::account`). Xbox mode tells this feature
+//! whether the Xbox is on, so it only polls Xbox Live while it is. The Discord account is told
+//! about the connection through `discord-connected` and `discord-disconnected` events.
 
 mod discord;
 
@@ -18,7 +19,7 @@ use serde_json::{Value, json};
 
 use discord::{Activity, Discord, DiscordError};
 use super::xbox_live::{self, Game, Power, Shared, Xbox, XboxError};
-use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, Tone};
+use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, Kind, Tone};
 use crate::core::host::Ctx;
 use crate::core::worker::{StopToken, Worker};
 
@@ -44,7 +45,6 @@ struct Settings {
     discord_client_id: String,
     ignored_titles: Vec<String>,
     check_without_xbox_mode: bool,
-    ms_client_id: String,
 }
 
 impl Default for Settings {
@@ -54,7 +54,6 @@ impl Default for Settings {
             // Home, Store, Xbox app
             ignored_titles: ["750323071", "1022622766", "714681658"].map(String::from).to_vec(),
             check_without_xbox_mode: true,
-            ms_client_id: String::new(),
         }
     }
 }
@@ -95,6 +94,8 @@ impl Feature for XboxPresence {
             description: "Show what you're playing on Xbox in your Discord status",
             icon: "message-circle",
             enabled_by_default: false,
+            kind: Kind::Feature,
+            uses: &[xbox_live::ACCOUNT_ID, "discord"],
         }
     }
 
@@ -104,7 +105,6 @@ impl Feature for XboxPresence {
             "discordClientId": d.discord_client_id,
             "ignoredTitles": d.ignored_titles,
             "checkWithoutXboxMode": d.check_without_xbox_mode,
-            "msClientId": d.ms_client_id,
         })
     }
 
@@ -124,25 +124,19 @@ impl Feature for XboxPresence {
             Field::text("discordClientId", "Discord application ID")
                 .placeholder("Discord's Xbox app")
                 .section("Advanced"),
-            Field::text("msClientId", "Microsoft client ID")
-                .placeholder("Xbox app's public client")
-                .help("Your own Azure app registration's client ID. Needs its own sign-in.")
-                .section("Advanced"),
         ]);
         fields
     }
 
     fn actions(&self, ctx: &Ctx) -> Vec<ActionDef> {
-        let s: Settings = ctx.settings();
         let mut actions = Vec::new();
-        if self.shared.token(ctx, &s.ms_client_id).is_some() {
+        if self.shared.token(ctx, &self.shared.client_id()).is_some() {
             actions.push(if self.paused.load(Ordering::SeqCst) {
                 ActionDef::new("pause", "Resume presence").icon("play").active(true)
             } else {
                 ActionDef::new("pause", "Pause presence").icon("pause")
             });
         }
-        actions.push(self.shared.account_action(ctx, &s.ms_client_id));
         actions
     }
 
@@ -153,11 +147,7 @@ impl Feature for XboxPresence {
             ctx.refresh();
             return Ok(());
         }
-        let s: Settings = ctx.settings();
-        if !self.shared.run_account_action(ctx, &s.ms_client_id, action)? {
-            bail!("Unknown action {action}");
-        }
-        Ok(())
+        bail!("Unknown action {action}")
     }
 
     fn start(&self, ctx: &Ctx) {
@@ -171,9 +161,7 @@ impl Feature for XboxPresence {
         ctx.refresh();
     }
 
-    fn stop(&self, ctx: &Ctx) {
-        self.shared.cancel_own_sign_in(ctx);
-
+    fn stop(&self, _ctx: &Ctx) {
         // Taken out first so the lock is released before anything calls back into actions()
         let main = self.main.lock().take();
         let Some(main) = main else { return };
@@ -206,7 +194,7 @@ struct Runner {
     paused: Arc<AtomicBool>,
     token: StopToken,
     xbox: Xbox,
-    ms_client_id: String,
+    client_id: String,
     discord: Option<Discord>,
     discord_client_id: String,
     /// What Discord is showing: `None` when unknown, `Some(None)` when cleared.
@@ -216,8 +204,6 @@ struct Runner {
     auth_seen: u64,
     nudge_seen: u64,
     last_error: Option<String>,
-    /// Whether the gamertag has been logged since the sign-in last changed.
-    greeted: bool,
     /// The status last given to the host: `None` when unknown, `Some(None)` when cleared.
     shown_status: Option<Option<(String, Tone)>>,
 }
@@ -225,17 +211,17 @@ struct Runner {
 impl Runner {
     fn new(ctx: Ctx, shared: Arc<Shared>, paused: Arc<AtomicBool>, token: StopToken) -> Self {
         let settings: Settings = ctx.settings();
-        let ms_client_id = settings.ms_client_id.trim().to_string();
+        let client_id = shared.client_id();
         let auth_seen = shared.auth_gen.load(Ordering::SeqCst);
-        let mut xbox = Xbox::new(&ms_client_id);
-        xbox.set_refresh_token(shared.token(&ctx, &ms_client_id));
+        let mut xbox = Xbox::new(&client_id);
+        xbox.set_refresh_token(shared.token(&ctx, &client_id));
         Self {
             ctx,
             shared,
             paused,
             token,
             xbox,
-            ms_client_id,
+            client_id,
             discord: None,
             discord_client_id: settings.discord_id(),
             last: None,
@@ -244,7 +230,6 @@ impl Runner {
             auth_seen,
             nudge_seen: 0,
             last_error: None,
-            greeted: false,
             shown_status: None,
         }
     }
@@ -259,6 +244,7 @@ impl Runner {
         }
         if let Some(mut discord) = self.discord.take() {
             let _ = discord.set_activity(None);
+            self.ctx.broadcast("discord-disconnected", Value::Null);
         }
     }
 
@@ -300,8 +286,7 @@ impl Runner {
         let generation = self.shared.auth_gen.load(Ordering::SeqCst);
         if generation != self.auth_seen {
             self.auth_seen = generation;
-            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &self.ms_client_id));
-            self.greeted = false;
+            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &self.client_id));
         }
 
         if !self.xbox.signed_in() {
@@ -338,17 +323,12 @@ impl Runner {
             Err(e) => return self.xbox_failed(e),
         };
         self.save_rotated_token();
-        if !self.greeted
-            && let Ok(auth) = self.xbox.xsts()
-        {
-            self.ctx.info(format!("Signed in to Xbox as {}", auth.gamertag));
-            self.greeted = true;
-        }
 
         if self.discord.is_none() {
             match Discord::connect(&self.discord_client_id) {
                 Ok(d) => {
                     self.ctx.info(format!("Connected to Discord as {}", d.username));
+                    self.ctx.broadcast("discord-connected", json!({ "username": d.username }));
                     self.discord = Some(d);
                     self.last = None;
                 }
@@ -379,12 +359,11 @@ impl Runner {
     }
 
     fn apply_settings(&mut self, settings: &Settings) {
-        let ms = settings.ms_client_id.trim();
-        if ms != self.ms_client_id {
-            self.ms_client_id = ms.to_string();
-            self.xbox = Xbox::new(ms);
-            self.xbox.set_refresh_token(self.shared.token(&self.ctx, ms));
-            self.greeted = false;
+        let ms = self.shared.client_id();
+        if ms != self.client_id {
+            self.xbox = Xbox::new(&ms);
+            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &ms));
+            self.client_id = ms;
         }
         let discord_id = settings.discord_id();
         if discord_id != self.discord_client_id {
@@ -471,10 +450,11 @@ impl Runner {
     }
 
     fn drop_discord(&mut self, clear_first: bool) {
-        if let Some(mut discord) = self.discord.take()
-            && clear_first
-        {
-            let _ = discord.set_activity(None);
+        if let Some(mut discord) = self.discord.take() {
+            if clear_first {
+                let _ = discord.set_activity(None);
+            }
+            self.ctx.broadcast("discord-disconnected", Value::Null);
         }
         self.last = None;
     }
@@ -482,12 +462,8 @@ impl Runner {
     fn xbox_failed(&mut self, e: XboxError) -> Duration {
         match e {
             XboxError::SignInExpired => {
-                self.shared.save_token(&self.ctx, &self.ms_client_id, None);
+                self.shared.expire(&self.ctx, &self.client_id);
                 self.xbox.set_refresh_token(None);
-                self.shared.expired.store(true, Ordering::SeqCst);
-                self.ctx.warn("Xbox sign-in expired, sign in again");
-                self.ctx.notify("Xbox", "Your Xbox sign-in expired. Sign in again on the Xbox presence settings page.");
-                self.ctx.refresh();
                 Duration::ZERO
             }
             XboxError::Failed(m) => {
@@ -504,7 +480,7 @@ impl Runner {
         if let Some(token) = self.xbox.take_rotated()
             && self.shared.auth_gen.load(Ordering::SeqCst) == self.auth_seen
         {
-            self.shared.save_token(&self.ctx, &self.ms_client_id, Some(&token));
+            self.shared.save_token(&self.ctx, &self.client_id, Some(&token));
         }
     }
 

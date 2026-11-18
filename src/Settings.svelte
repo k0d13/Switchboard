@@ -10,6 +10,8 @@
   let page = $state("general");
 
   const feature = $derived(app.state?.features.find((f) => f.id === page) ?? null);
+  const accounts = $derived((app.state?.features ?? []).filter((f) => f.kind === "account"));
+  const features = $derived((app.state?.features ?? []).filter((f) => f.kind === "feature"));
 
   onMount(() => {
     startStore(true);
@@ -38,10 +40,21 @@
         <span>General</span>
       </button>
 
-      {#if app.state?.features.length}
+      {#if accounts.length}
+        <div class="group-label">Accounts</div>
+      {/if}
+      {#each accounts as f (f.id)}
+        <button type="button" class="item" class:sel={page === f.id} onclick={() => (page = f.id)}>
+          <Icon name={f.icon} size={16} />
+          <span>{f.name}</span>
+          <span class="dot {f.status?.tone ?? 'idle'}" title={f.status?.text ?? ""}></span>
+        </button>
+      {/each}
+
+      {#if features.length}
         <div class="group-label">Features</div>
       {/if}
-      {#each app.state?.features ?? [] as f (f.id)}
+      {#each features as f (f.id)}
         <button type="button" class="item" class:sel={page === f.id} onclick={() => (page = f.id)}>
           <Icon name={f.icon} size={16} />
           <span>{f.name}</span>
@@ -68,7 +81,7 @@
         <LogPage />
       {:else if feature}
         {#key feature.id}
-          <FeaturePage {feature} />
+          <FeaturePage {feature} navigate={(id) => (page = id)} />
         {/key}
       {:else}
         <p class="missing">That feature isn't available.</p>

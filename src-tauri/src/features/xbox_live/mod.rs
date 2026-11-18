@@ -1,5 +1,5 @@
-//! What the Xbox features share, without being a feature itself: the Xbox Live client, one
-//! sign-in that both use, and whether the Xbox is on.
+//! What the Xbox features share: the Xbox Live client, the Xbox account (one sign-in, shown under
+//! Accounts in settings), and whether the Xbox is on.
 //!
 //! When both are on, Xbox mode's watcher tells presence whether the Xbox is on, so presence only
 //! polls Xbox Live while it is. On its own, presence polls less often all the time.
@@ -7,12 +7,15 @@
 mod account;
 mod api;
 
+pub use account::{ID as ACCOUNT_ID, XboxAccount};
 pub use api::*;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+
+use crate::core::host::Ctx;
 
 /// Whether the Xbox is on, as last seen on the network by Xbox mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -23,7 +26,7 @@ pub enum Power {
     On = 2,
 }
 
-/// What both features share: the sign-in, and whether the Xbox is on.
+/// What the Xbox features share: the sign-in, and whether the Xbox is on.
 #[derive(Default)]
 pub struct Shared {
     power: AtomicU8,
@@ -36,6 +39,12 @@ pub struct Shared {
     pub auth_gen: AtomicU64,
     sign_in_ids: AtomicU64,
     sign_in: Mutex<Option<account::Pending>>,
+    /// The Microsoft client ID from the account's settings, blank for the Xbox app's own.
+    client_id: Mutex<String>,
+    /// Who's signed in, once Xbox Live has said.
+    gamertag: Mutex<Option<String>>,
+    /// The account's own handle, for showing its status and the sign-in code.
+    account: Mutex<Option<Ctx>>,
 }
 
 impl Shared {

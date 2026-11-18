@@ -8,6 +8,16 @@ use serde_json::Value;
 
 use super::host::Ctx;
 
+/// Whether an item is a feature or an account that features share.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Feature,
+    /// A third-party account, such as an Xbox sign-in. Always on, listed under Accounts in settings,
+    /// and kept out of the tray and flyout.
+    Account,
+}
+
 pub struct FeatureInfo {
     /// Stable id: keys the settings file, hotkeys and CLI commands. kebab-case.
     pub id: &'static str,
@@ -16,6 +26,9 @@ pub struct FeatureInfo {
     /// Icon name from the UI's icon set (src/lib/Icon.svelte).
     pub icon: &'static str,
     pub enabled_by_default: bool,
+    pub kind: Kind,
+    /// Ids of the accounts this feature relies on, linked from its settings page.
+    pub uses: &'static [&'static str],
 }
 
 #[derive(Clone, Debug)]

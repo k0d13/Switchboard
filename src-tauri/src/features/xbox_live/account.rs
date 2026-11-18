@@ -1,24 +1,28 @@
-//! The Xbox Live sign-in both features use. The refresh token is stored once, so signing in from
-//! either feature signs in both. A custom Microsoft client ID gets a sign-in of its own, since a
+//! The Xbox account: one sign-in that every Xbox feature uses, shown under Accounts in settings.
+//! The refresh token is stored once. A custom Microsoft client ID gets a sign-in of its own, since a
 //! token only works with the client it was issued to.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use anyhow::bail;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
 use super::Shared;
-use super::api::{self as xbox_live, Msa, Poll};
-use crate::core::feature::{ActionDef, Prompt};
+use super::api::{self as xbox_live, Msa, Poll, Xbox, XboxError};
+use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, Kind, Prompt, Tone};
 use crate::core::host::Ctx;
 use crate::core::worker::{StopToken, Worker};
 
-/// Secrets group, so the token outlives either feature being turned off.
+pub const ID: &str = "xbox-account";
+
+/// Secrets group, kept from before the account had a page of its own so existing sign-ins carry over.
 const GROUP: &str = "xbox";
 
 pub struct Pending {
     id: u64,
-    /// The feature the sign-in was started from, which shows the code.
-    ctx: Ctx,
     worker: Worker,
 }
 
@@ -30,6 +34,11 @@ fn token_key(client_id: &str) -> String {
 }
 
 impl Shared {
+    /// The Microsoft client ID the features should sign in with.
+    pub fn client_id(&self) -> String {
+        self.client_id.lock().clone()
+    }
+
     pub fn token(&self, ctx: &Ctx, client_id: &str) -> Option<String> {
         ctx.shared_secret(GROUP, &token_key(client_id))
     }
@@ -40,6 +49,7 @@ impl Shared {
     }
 
     pub fn auth_changed(&self) {
+        *self.gamertag.lock() = None;
         self.auth_gen.fetch_add(1, Ordering::SeqCst);
         self.nudge();
     }
@@ -48,9 +58,95 @@ impl Shared {
         self.sign_in.lock().is_some()
     }
 
+    /// Xbox Live rejected the saved sign-in. Forgets it and tells the user once, however many
+    /// features notice.
+    pub fn expire(&self, ctx: &Ctx, client_id: &str) {
+        self.save_token(ctx, client_id, None);
+        *self.gamertag.lock() = None;
+        if !self.expired.swap(true, Ordering::SeqCst) {
+            ctx.warn("Xbox sign-in expired, sign in again");
+            ctx.notify("Xbox", "Your Xbox sign-in expired. Sign in again under Accounts in Switchboard's settings.");
+        }
+        self.show_status();
+        ctx.refresh();
+    }
+
+    fn account_ctx(&self) -> Option<Ctx> {
+        self.account.lock().clone()
+    }
+
+    /// Puts the sign-in state on the account. Takes every value out before calling the host,
+    /// which asks `actions()` for the current state and takes the same locks.
+    fn show_status(&self) {
+        let Some(ctx) = self.account_ctx() else { return };
+        let client_id = self.client_id();
+        let gamertag = self.gamertag.lock().clone();
+        let (text, tone) = if self.sign_in_pending() {
+            ("Waiting for you to sign in".to_string(), Tone::Idle)
+        } else if self.token(&ctx, &client_id).is_some() {
+            match gamertag {
+                Some(tag) => (format!("Signed in as {tag}"), Tone::Ok),
+                None => ("Signed in".to_string(), Tone::Ok),
+            }
+        } else if self.expired.load(Ordering::SeqCst) {
+            ("Sign-in expired".to_string(), Tone::Warn)
+        } else {
+            ("Not signed in".to_string(), Tone::Idle)
+        };
+        ctx.set_status(text, tone);
+    }
+
+    /// Asks Xbox Live who's signed in, on a thread of its own. Also notices an expired sign-in
+    /// before any feature needs it.
+    fn look_up_gamertag(self: &Arc<Self>) {
+        let Some(ctx) = self.account_ctx() else { return };
+        let client_id = self.client_id();
+        let Some(token) = self.token(&ctx, &client_id) else {
+            self.show_status();
+            return;
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let generation = shared.auth_gen.load(Ordering::SeqCst);
+            let mut xbox = Xbox::new(&client_id);
+            xbox.set_refresh_token(Some(token));
+            let result = xbox.xsts();
+            // The user signed out or in meanwhile, so this answer is about someone else
+            if shared.auth_gen.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if let Some(rotated) = xbox.take_rotated() {
+                shared.save_token(&ctx, &client_id, Some(&rotated));
+            }
+            match result {
+                Ok(auth) => {
+                    ctx.info(format!("Signed in to Xbox as {}", auth.gamertag));
+                    *shared.gamertag.lock() = Some(auth.gamertag);
+                    shared.show_status();
+                }
+                Err(XboxError::SignInExpired) => shared.expire(&ctx, &client_id),
+                Err(XboxError::Failed(m)) => ctx.warn(format!("Couldn't look up the Xbox account: {m}")),
+            }
+        });
+    }
+
+    fn set_client_id(self: &Arc<Self>, client_id: &str) {
+        let client_id = client_id.trim().to_string();
+        {
+            let mut current = self.client_id.lock();
+            if *current == client_id {
+                return;
+            }
+            *current = client_id;
+        }
+        self.expired.store(false, Ordering::SeqCst);
+        self.auth_changed();
+        self.look_up_gamertag();
+    }
+
     /// Sign in, Sign out or Cancel sign-in, whichever fits.
-    pub fn account_action(&self, ctx: &Ctx, client_id: &str) -> ActionDef {
-        if self.token(ctx, client_id).is_some() {
+    fn account_action(&self, ctx: &Ctx) -> ActionDef {
+        if self.token(ctx, &self.client_id()).is_some() {
             ActionDef::new("sign-out", "Sign out").icon("log-out").no_hotkey().no_flyout()
         } else if self.sign_in_pending() {
             ActionDef::new("cancel-sign-in", "Cancel sign-in").icon("x").no_hotkey().no_flyout()
@@ -59,29 +155,22 @@ impl Shared {
         }
     }
 
-    /// Runs one of the account actions. False if `action` isn't one.
-    pub fn run_account_action(self: &Arc<Self>, ctx: &Ctx, client_id: &str, action: &str) -> anyhow::Result<bool> {
-        match action {
-            "sign-in" => self.sign_in(ctx, client_id)?,
-            "cancel-sign-in" => self.cancel_sign_in(ctx),
-            "sign-out" => {
-                self.cancel_sign_in(ctx);
-                self.save_token(ctx, client_id, None);
-                self.expired.store(false, Ordering::SeqCst);
-                self.auth_changed();
-                ctx.info("Signed out of Xbox");
-                ctx.refresh();
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
+    fn sign_out(&self, ctx: &Ctx) {
+        self.cancel_sign_in(ctx);
+        self.save_token(ctx, &self.client_id(), None);
+        self.expired.store(false, Ordering::SeqCst);
+        self.auth_changed();
+        ctx.info("Signed out of Xbox");
+        self.show_status();
+        ctx.refresh();
     }
 
-    fn sign_in(self: &Arc<Self>, ctx: &Ctx, client_id: &str) -> anyhow::Result<()> {
-        if self.token(ctx, client_id).is_some() || self.sign_in_pending() {
+    fn sign_in(self: &Arc<Self>, ctx: &Ctx) -> anyhow::Result<()> {
+        let client_id = self.client_id();
+        if self.token(ctx, &client_id).is_some() || self.sign_in_pending() {
             return Ok(());
         }
-        let msa = Msa::new(client_id);
+        let msa = Msa::new(&client_id);
         let agent = xbox_live::agent();
         let code = xbox_live::request_device_code(&agent, &msa).map_err(anyhow::Error::msg)?;
 
@@ -99,42 +188,30 @@ impl Shared {
                 return Ok(());
             }
             let id = self.sign_in_ids.fetch_add(1, Ordering::SeqCst) + 1;
-            let (c, shared, client_id) = (ctx.clone(), self.clone(), client_id.to_string());
+            let (c, shared) = (ctx.clone(), self.clone());
             let worker = Worker::spawn("xbox-sign-in", move |token| {
                 sign_in_worker(c, shared, token, id, client_id, agent, msa, code)
             });
-            *slot = Some(Pending { id, ctx: ctx.clone(), worker });
+            *slot = Some(Pending { id, worker });
         }
         ctx.set_prompt(Some(prompt));
 
         self.expired.store(false, Ordering::SeqCst);
         self.nudge();
+        self.show_status();
         ctx.refresh();
         Ok(())
     }
 
-    /// Cancels a sign-in in progress, whichever feature started it.
-    pub fn cancel_sign_in(&self, ctx: &Ctx) {
+    fn cancel_sign_in(&self, ctx: &Ctx) {
         let pending = self.sign_in.lock().take();
         if let Some(p) = pending {
             p.worker.signal();
-            p.ctx.set_prompt(None);
+            ctx.set_prompt(None);
         }
         self.nudge();
+        self.show_status();
         ctx.refresh();
-    }
-
-    /// Cancels a sign-in only if this feature started it, for when the feature stops.
-    pub fn cancel_own_sign_in(&self, ctx: &Ctx) {
-        let pending = {
-            let mut slot = self.sign_in.lock();
-            if slot.as_ref().is_some_and(|p| p.ctx.id() == ctx.id()) { slot.take() } else { None }
-        };
-        if let Some(p) = pending {
-            p.worker.signal();
-            ctx.set_prompt(None);
-            self.nudge();
-        }
     }
 }
 
@@ -189,8 +266,8 @@ fn sign_in_worker(
         Ok(refresh) => {
             shared.save_token(&ctx, &client_id, Some(&refresh));
             shared.expired.store(false, Ordering::SeqCst);
-            ctx.info("Signed in to Xbox");
             shared.auth_changed();
+            shared.look_up_gamertag();
         }
         Err(e) => {
             ctx.warn(e.clone());
@@ -198,17 +275,105 @@ fn sign_in_worker(
             shared.nudge();
         }
     }
+    shared.show_status();
     ctx.refresh();
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Settings {
+    ms_client_id: String,
+}
+
+/// The Xbox account's page under Accounts: signing in and out, and which Microsoft client to use.
+pub struct XboxAccount {
+    shared: Arc<Shared>,
+}
+
+impl XboxAccount {
+    pub fn new(shared: Arc<Shared>) -> Self {
+        Self { shared }
+    }
+}
+
+impl Feature for XboxAccount {
+    fn info(&self) -> FeatureInfo {
+        FeatureInfo {
+            id: ID,
+            name: "Xbox",
+            description: "The Microsoft account the Xbox features sign in with",
+            icon: "gamepad",
+            enabled_by_default: true,
+            kind: Kind::Account,
+            uses: &[],
+        }
+    }
+
+    fn defaults(&self) -> Value {
+        let d = Settings::default();
+        json!({ "msClientId": d.ms_client_id })
+    }
+
+    fn schema(&self, _ctx: &Ctx) -> Vec<Field> {
+        vec![
+            Field::text("msClientId", "Microsoft client ID")
+                .placeholder("Xbox app's public client")
+                .help("Your own Azure app registration's client ID. Needs its own sign-in.")
+                .section("Advanced"),
+        ]
+    }
+
+    fn actions(&self, ctx: &Ctx) -> Vec<ActionDef> {
+        vec![self.shared.account_action(ctx)]
+    }
+
+    fn run(&self, ctx: &Ctx, action: &str) -> anyhow::Result<()> {
+        match action {
+            "sign-in" => self.shared.sign_in(ctx)?,
+            "cancel-sign-in" => self.shared.cancel_sign_in(ctx),
+            "sign-out" => self.shared.sign_out(ctx),
+            _ => bail!("Unknown action {action}"),
+        }
+        Ok(())
+    }
+
+    fn start(&self, ctx: &Ctx) {
+        let s: Settings = ctx.settings();
+        *self.shared.client_id.lock() = s.ms_client_id.trim().to_string();
+        *self.shared.account.lock() = Some(ctx.clone());
+        self.shared.look_up_gamertag();
+    }
+
+    fn stop(&self, _ctx: &Ctx) {
+        let pending = self.shared.sign_in.lock().take();
+        if let Some(p) = pending {
+            p.worker.signal();
+        }
+        *self.shared.account.lock() = None;
+    }
+
+    fn settings_changed(&self, ctx: &Ctx) {
+        let s: Settings = ctx.settings();
+        self.shared.set_client_id(&s.ms_client_id);
+        ctx.refresh();
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::token_key;
+    use super::*;
 
     #[test]
     fn custom_clients_get_their_own_sign_in() {
         assert_eq!(token_key(""), "refreshToken");
         assert_eq!(token_key("  "), "refreshToken");
         assert_eq!(token_key(" abc "), "refreshToken.abc");
+    }
+
+    #[test]
+    fn defaults_match_settings_default() {
+        let shared = Arc::new(Shared::default());
+        let from_json: Settings = serde_json::from_value(XboxAccount::new(shared).defaults()).unwrap();
+        assert_eq!(from_json, Settings::default());
     }
 }

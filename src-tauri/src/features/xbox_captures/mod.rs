@@ -7,7 +7,7 @@
 //! client, so it never waits for the worker. They coordinate through `Core`, which is also where
 //! the list of captures already dealt with lives.
 //!
-//! The sign-in is shared with the other Xbox features (see `xbox_live`).
+//! The sign-in comes from the Xbox account (`xbox_live::account`).
 
 mod clipboard;
 
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::xbox_live::{self, Capture, CaptureKind, Power, Shared, Xbox, XboxError};
-use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, Tone};
+use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, Kind, Tone};
 use crate::core::host::Ctx;
 use crate::core::worker::{StopToken, Worker};
 use crate::platform::shell;
@@ -56,7 +56,6 @@ struct Settings {
     download_recordings: bool,
     copy_recordings: bool,
     check_without_xbox_mode: bool,
-    ms_client_id: String,
 }
 
 impl Default for Settings {
@@ -69,7 +68,6 @@ impl Default for Settings {
             download_recordings: true,
             copy_recordings: true,
             check_without_xbox_mode: true,
-            ms_client_id: String::new(),
         }
     }
 }
@@ -354,18 +352,18 @@ impl XboxCaptures {
     /// The newest capture, downloaded if it isn't already, and copied.
     fn copy_latest(&self, ctx: &Ctx) -> anyhow::Result<()> {
         let s: Settings = ctx.settings();
-        let ms = s.ms_client_id.trim();
-        let Some(token) = self.shared.token(ctx, ms) else { bail!("Sign in to Xbox first") };
-        let mut xbox = Xbox::new(ms);
+        let ms = self.shared.client_id();
+        let Some(token) = self.shared.token(ctx, &ms) else { bail!("Sign in to Xbox under Accounts first") };
+        let mut xbox = Xbox::new(&ms);
         xbox.set_refresh_token(Some(token));
 
         let listing = list(&mut xbox).map_err(|e| match e {
-            XboxError::SignInExpired => anyhow!("Your Xbox sign-in expired, sign in again"),
+            XboxError::SignInExpired => anyhow!("Your Xbox sign-in expired, sign in again under Accounts"),
             XboxError::Failed(m) => anyhow!("Can't reach Xbox Live: {m}"),
         })?;
         // Another feature may have used the old token meanwhile, so hand them the new one
         if let Some(rotated) = xbox.take_rotated() {
-            self.shared.save_token(ctx, ms, Some(&rotated));
+            self.shared.save_token(ctx, &ms, Some(&rotated));
             self.shared.auth_changed();
         }
         for p in &listing.problems {
@@ -413,6 +411,8 @@ impl Feature for XboxCaptures {
             description: "Copy new Xbox screenshots and recordings to the clipboard",
             icon: "camera",
             enabled_by_default: false,
+            kind: Kind::Feature,
+            uses: &[xbox_live::ACCOUNT_ID],
         }
     }
 
@@ -426,7 +426,6 @@ impl Feature for XboxCaptures {
             "downloadRecordings": d.download_recordings,
             "copyRecordings": d.copy_recordings,
             "checkWithoutXboxMode": d.check_without_xbox_mode,
-            "msClientId": d.ms_client_id,
         })
     }
 
@@ -455,26 +454,19 @@ impl Feature for XboxCaptures {
                 .placeholder(default_folder(CaptureKind::Recording).display().to_string())
                 .section("Recordings"),
         ]);
-        fields.push(
-            Field::text("msClientId", "Microsoft client ID")
-                .placeholder("Xbox app's public client")
-                .help("Your own Azure app registration's client ID. Needs its own sign-in.")
-                .section("Advanced"),
-        );
         fields
     }
 
     fn actions(&self, ctx: &Ctx) -> Vec<ActionDef> {
         let s: Settings = ctx.settings();
         let mut actions = Vec::new();
-        if self.shared.token(ctx, &s.ms_client_id).is_some() {
+        if self.shared.token(ctx, &self.shared.client_id()).is_some() {
             actions.push(ActionDef::new("copy-latest", "Copy latest capture").icon("image"));
         }
         actions.push(ActionDef::new("open-screenshots", "Open screenshots folder").icon("folder-open"));
         if s.download_recordings {
             actions.push(ActionDef::new("open-recordings", "Open recordings folder").icon("folder-open").no_flyout());
         }
-        actions.push(self.shared.account_action(ctx, &s.ms_client_id));
         actions
     }
 
@@ -488,13 +480,7 @@ impl Feature for XboxCaptures {
                 std::fs::create_dir_all(&folder).with_context(|| format!("couldn't create {}", folder.display()))?;
                 shell::open_folder(&folder)
             }
-            _ => {
-                let s: Settings = ctx.settings();
-                if !self.shared.run_account_action(ctx, &s.ms_client_id, action)? {
-                    bail!("Unknown action {action}");
-                }
-                Ok(())
-            }
+            _ => bail!("Unknown action {action}"),
         }
     }
 
@@ -509,9 +495,7 @@ impl Feature for XboxCaptures {
         ctx.refresh();
     }
 
-    fn stop(&self, ctx: &Ctx) {
-        self.shared.cancel_own_sign_in(ctx);
-
+    fn stop(&self, _ctx: &Ctx) {
         // Taken out first so the lock is released before anything calls back into actions()
         let main = self.main.lock().take();
         let Some(main) = main else { return };
@@ -537,7 +521,7 @@ struct Runner {
     core: Arc<Core>,
     token: StopToken,
     xbox: Xbox,
-    ms_client_id: String,
+    client_id: String,
     auth_seen: u64,
     nudge_seen: u64,
     last_error: Option<String>,
@@ -550,11 +534,10 @@ struct Runner {
 
 impl Runner {
     fn new(ctx: Ctx, shared: Arc<Shared>, core: Arc<Core>, token: StopToken) -> Self {
-        let settings: Settings = ctx.settings();
-        let ms_client_id = settings.ms_client_id.trim().to_string();
+        let client_id = shared.client_id();
         let auth_seen = shared.auth_gen.load(Ordering::SeqCst);
-        let mut xbox = Xbox::new(&ms_client_id);
-        xbox.set_refresh_token(shared.token(&ctx, &ms_client_id));
+        let mut xbox = Xbox::new(&client_id);
+        xbox.set_refresh_token(shared.token(&ctx, &client_id));
         let last_power = shared.power();
         Self {
             ctx,
@@ -562,7 +545,7 @@ impl Runner {
             core,
             token,
             xbox,
-            ms_client_id,
+            client_id,
             auth_seen,
             nudge_seen: 0,
             last_error: None,
@@ -615,12 +598,12 @@ impl Runner {
     /// One pass of the loop. Returns how long to wait before the next.
     fn tick(&mut self) -> Duration {
         let settings: Settings = self.ctx.settings();
-        self.apply_settings(&settings);
+        self.apply_settings();
 
         let generation = self.shared.auth_gen.load(Ordering::SeqCst);
         if generation != self.auth_seen {
             self.auth_seen = generation;
-            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &self.ms_client_id));
+            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &self.client_id));
         }
 
         if !self.xbox.signed_in() {
@@ -669,12 +652,12 @@ impl Runner {
         }
     }
 
-    fn apply_settings(&mut self, settings: &Settings) {
-        let ms = settings.ms_client_id.trim();
-        if ms != self.ms_client_id {
-            self.ms_client_id = ms.to_string();
-            self.xbox = Xbox::new(ms);
-            self.xbox.set_refresh_token(self.shared.token(&self.ctx, ms));
+    fn apply_settings(&mut self) {
+        let ms = self.shared.client_id();
+        if ms != self.client_id {
+            self.xbox = Xbox::new(&ms);
+            self.xbox.set_refresh_token(self.shared.token(&self.ctx, &ms));
+            self.client_id = ms;
         }
     }
 
@@ -774,12 +757,8 @@ impl Runner {
     fn xbox_failed(&mut self, e: XboxError) -> Duration {
         match e {
             XboxError::SignInExpired => {
-                self.shared.save_token(&self.ctx, &self.ms_client_id, None);
+                self.shared.expire(&self.ctx, &self.client_id);
                 self.xbox.set_refresh_token(None);
-                self.shared.expired.store(true, Ordering::SeqCst);
-                self.ctx.warn("Xbox sign-in expired, sign in again");
-                self.ctx.notify("Xbox", "Your Xbox sign-in expired. Sign in again on the Xbox captures settings page.");
-                self.ctx.refresh();
                 Duration::ZERO
             }
             XboxError::Failed(m) => {
@@ -796,7 +775,7 @@ impl Runner {
         if let Some(token) = self.xbox.take_rotated()
             && self.shared.auth_gen.load(Ordering::SeqCst) == self.auth_seen
         {
-            self.shared.save_token(&self.ctx, &self.ms_client_id, Some(&token));
+            self.shared.save_token(&self.ctx, &self.client_id, Some(&token));
         }
     }
 

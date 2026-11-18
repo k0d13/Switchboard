@@ -4,7 +4,7 @@
 // Commands (invoke):
 //   get_state(): AppState
 //   get_schema({ id }): Field[]                    slow-ish (may query hardware), call when a feature page opens
-//   set_enabled({ id, enabled }): void
+//   set_enabled({ id, enabled }): void            rejects for accounts, which can't be turned off
 //   set_settings({ id, settings }): void          whole settings object for that feature
 //   run_action({ id, action }): void              rejects with a message string on failure
 //   set_hotkey({ id, action, hotkey }): void      hotkey: accelerator string, null = unbound, "default" = reset
@@ -58,6 +58,10 @@ export interface FeatureState {
   name: string;
   description: string;
   icon: string;
+  /** "account" items (Xbox, Discord) are always enabled, can't be turned off and never show in the flyout. */
+  kind: "feature" | "account";
+  /** Ids of the accounts this feature relies on. */
+  uses: string[];
   enabled: boolean;
   status: Status | null;
   /** An action is running. */

@@ -8,7 +8,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::core::feature::Tone;
+use crate::core::feature::{Kind, Tone};
 use crate::core::host::{AppState, Host};
 
 const ICON: &[u8] = include_bytes!("../icons/tray.png");
@@ -78,7 +78,7 @@ pub fn refresh(app: &AppHandle, state: &AppState) {
     }
 
     let mut tip = String::from("Switchboard");
-    for f in state.features.iter().filter(|f| f.enabled) {
+    for f in state.features.iter().filter(|f| f.enabled && f.kind == Kind::Feature) {
         if let Some(s) = &f.status {
             tip.push_str(&format!("\n{}: {}", f.name, s.text));
         }
@@ -87,7 +87,7 @@ pub fn refresh(app: &AppHandle, state: &AppState) {
     let tip: String = tip.chars().take(127).collect();
     let _ = tray.set_tooltip(Some(&tip));
 
-    let active = state.features.iter().any(|f| f.enabled && f.status.as_ref().is_some_and(|s| s.tone == Tone::Active));
+    let active = state.features.iter().any(|f| f.enabled && f.kind == Kind::Feature && f.status.as_ref().is_some_and(|s| s.tone == Tone::Active));
     if let Ok(img) = Image::from_bytes(if active { ICON_ACTIVE } else { ICON }) {
         let _ = tray.set_icon(Some(img));
     }
@@ -95,7 +95,7 @@ pub fn refresh(app: &AppHandle, state: &AppState) {
 
 fn build_menu(app: &AppHandle, state: &AppState) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
-    for f in state.features.iter().filter(|f| f.enabled) {
+    for f in state.features.iter().filter(|f| f.enabled && f.kind == Kind::Feature) {
         let title = match &f.status {
             Some(s) => format!("{}: {}", f.name, s.text),
             None => f.name.to_string(),

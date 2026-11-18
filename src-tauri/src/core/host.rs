@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 
-use super::feature::{ActionDef, Event, Feature, Field, Prompt, Status, Tone};
+use super::feature::{ActionDef, Event, Feature, Field, Kind, Prompt, Status, Tone};
 use super::log::{Level, Log, LogLine};
 use super::settings::{self, Store};
 use crate::platform::secrets::Secrets;
@@ -65,7 +65,12 @@ impl Host {
     }
 
     pub fn enabled(&self, id: &str) -> bool {
-        let default = self.feature(id).map(|(_, f)| f.info().enabled_by_default).unwrap_or(false);
+        let Some((_, f)) = self.feature(id) else { return false };
+        let info = f.info();
+        if info.kind == Kind::Account {
+            return true;
+        }
+        let default = info.enabled_by_default;
         self.store.lock().data.features.get(id).and_then(|e| e.enabled).unwrap_or(default)
     }
 
@@ -126,6 +131,9 @@ impl Host {
 
     pub fn set_enabled(self: &Arc<Self>, id: &str, enabled: bool) -> Result<(), String> {
         let (id, f) = self.feature(id).ok_or("No such feature")?;
+        if f.info().kind == Kind::Account {
+            return Err("Accounts can't be turned off".into());
+        }
         {
             let mut store = self.store.lock();
             store.entry(id).enabled = Some(enabled);
@@ -282,6 +290,8 @@ impl Host {
                     name: info.name,
                     description: info.description,
                     icon: info.icon,
+                    kind: info.kind,
+                    uses: info.uses,
                     enabled,
                     status,
                     busy,
@@ -328,6 +338,8 @@ pub struct FeatureState {
     pub name: &'static str,
     pub description: &'static str,
     pub icon: &'static str,
+    pub kind: Kind,
+    pub uses: &'static [&'static str],
     pub enabled: bool,
     pub status: Option<Status>,
     pub busy: bool,

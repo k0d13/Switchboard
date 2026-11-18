@@ -89,6 +89,7 @@ function createMock() {
   };
 
   let signedIn = true;
+  let signingIn = false;
   let paused = false;
   let xbox = false;
   let signInTimer: ReturnType<typeof setTimeout> | undefined;
@@ -105,11 +106,41 @@ function createMock() {
     { time: now - 22000, level: "warn", source: "xbox-presence", message: "Discord disconnected, waiting for it to come back" },
   ];
 
+  const xboxAccount: FeatureState = {
+    id: "xbox-account",
+    name: "Xbox",
+    description: "The Microsoft account the Xbox features sign in with",
+    icon: "gamepad",
+    kind: "account",
+    uses: [],
+    enabled: true,
+    status: null,
+    busy: false,
+    prompt: null,
+    actions: [],
+    settings: { msClientId: "" },
+  };
+  const discordAccount: FeatureState = {
+    id: "discord",
+    name: "Discord",
+    description: "The Discord app on this PC. There's nothing to sign in to, Switchboard talks to the app directly",
+    icon: "message-circle",
+    kind: "account",
+    uses: [],
+    enabled: true,
+    status: null,
+    busy: false,
+    prompt: null,
+    actions: [],
+    settings: {},
+  };
   const xboxFeature: FeatureState = {
     id: "xbox",
     name: "Xbox mode",
     description: "Put your Xbox on a monitor while it's on, and give the monitor back when it's off",
     icon: "gamepad",
+    kind: "feature",
+    uses: ["xbox-account"],
     enabled: true,
     status: null,
     busy: false,
@@ -118,7 +149,6 @@ function createMock() {
     settings: {
       monitorModel: "Acme 27Q", xboxInput: 18, pcInput: 15, xboxLiveId: "FD00112233445566", offInPcMode: false,
       switchDelayMs: 500, wakeTimeoutSecs: 10, xboxBootSecs: 30, xboxAddress: "", xboxName: "XBOX",
-      msClientId: "",
     },
   };
   const presenceFeature: FeatureState = {
@@ -126,30 +156,34 @@ function createMock() {
     name: "Xbox presence",
     description: "Show what you're playing on Xbox in your Discord status",
     icon: "message-circle",
+    kind: "feature",
+    uses: ["xbox-account", "discord"],
     enabled: true,
     status: null,
     busy: false,
     prompt: null,
     actions: [],
     settings: {
-      discordClientId: "", ignoredTitles: ["750323071", "1022622766", "714681658"], msClientId: "",
+      discordClientId: "", ignoredTitles: ["750323071", "1022622766", "714681658"],
     },
   };
-  const features: FeatureState[] = [xboxFeature, presenceFeature];
+  const features: FeatureState[] = [xboxAccount, discordAccount, xboxFeature, presenceFeature];
 
   const schemas: Record<string, Field[]> = {
-    "xbox-presence": [
-      { key: "ignoredTitles", label: "Ignored title IDs", kind: "list", section: "Advanced", help: "Dashboard apps that shouldn't count as playing" },
-      { key: "discordClientId", label: "Discord application ID", kind: "text", section: "Advanced", placeholder: "Discord's Xbox app" },
+    "xbox-account": [
       {
         key: "msClientId", label: "Microsoft client ID", kind: "text", section: "Advanced", placeholder: "Xbox app's public client",
         help: "Your own Azure app registration's client ID. Needs its own sign-in.",
       },
     ],
+    "xbox-presence": [
+      { key: "ignoredTitles", label: "Ignored title IDs", kind: "list", section: "Advanced", help: "Dashboard apps that shouldn't count as playing" },
+      { key: "discordClientId", label: "Discord application ID", kind: "text", section: "Advanced", placeholder: "Discord's Xbox app" },
+    ],
     xbox: [
       {
         key: "xboxLiveId", label: "Console", kind: "select", section: "Xbox",
-        help: "Only an Xbox that's on shows up here. To turn it on and off, sign in above, turn on Remote features in the Xbox's settings, and set its power mode to Sleep.",
+        help: "Only an Xbox that's on shows up here. To turn it on and off, sign in to the Xbox account, turn on Remote features in the Xbox's settings, and set its power mode to Sleep.",
         options: [
           { value: "", label: "None" },
           { value: "FD00112233445566", label: "XBOX (192.168.1.20)" },
@@ -191,6 +225,12 @@ function createMock() {
 
   function refresh() {
     xboxFeature.status = { text: xbox ? "Xbox mode" : "PC mode", tone: xbox ? "active" : "ok" };
+    xboxAccount.status = signingIn
+      ? { text: "Waiting for you to sign in", tone: "active" }
+      : signedIn
+        ? { text: "Signed in as Gamertag", tone: "ok" }
+        : { text: "Not signed in", tone: "warn" };
+    discordAccount.status = { text: "Connected as Gamertag", tone: "ok" };
     presenceFeature.status = !signedIn
       ? { text: "Not signed in", tone: "warn" }
       : paused
@@ -199,20 +239,19 @@ function createMock() {
           ? { text: "Playing Forza Horizon 6", tone: "active" }
           : null;
     const hotkey = (f: FeatureState, id: string) => f.actions.find((a) => a.id === id)?.hotkey;
-    const signAction = signedIn
-      ? { id: "sign-out", label: "Sign out", icon: "log-out", defaultHotkey: null, hotkey: null, hotkeyable: false, flyout: false, active: false }
-      : { id: "sign-in", label: "Sign in", icon: "log-in", defaultHotkey: null, hotkey: null, hotkeyable: false, flyout: false, active: false };
     xboxFeature.actions = [
       { id: "xbox-mode", label: "Xbox mode", icon: "gamepad", defaultHotkey: "Ctrl+Alt+X", hotkey: hotkey(xboxFeature, "xbox-mode") ?? "Ctrl+Alt+X", hotkeyable: true, flyout: true, active: xbox },
       { id: "pc-mode", label: "PC mode", icon: "monitor", defaultHotkey: "Ctrl+Alt+P", hotkey: hotkey(xboxFeature, "pc-mode") ?? "Ctrl+Alt+P", hotkeyable: true, flyout: true, active: !xbox },
-      { ...signAction },
     ];
     presenceFeature.actions = signedIn
-      ? [
-          { id: "pause", label: paused ? "Resume presence" : "Pause presence", icon: paused ? "play" : "pause", defaultHotkey: null, hotkey: hotkey(presenceFeature, "pause") ?? null, hotkeyable: true, flyout: true, active: paused },
-          { ...signAction },
-        ]
-      : [{ ...signAction }];
+      ? [{ id: "pause", label: paused ? "Resume presence" : "Pause presence", icon: paused ? "play" : "pause", defaultHotkey: null, hotkey: hotkey(presenceFeature, "pause") ?? null, hotkeyable: true, flyout: true, active: paused }]
+      : [];
+    const sign = signingIn
+      ? { id: "cancel-sign-in", label: "Cancel sign-in", icon: "x" }
+      : signedIn
+        ? { id: "sign-out", label: "Sign out", icon: "log-out" }
+        : { id: "sign-in", label: "Sign in", icon: "log-in" };
+    xboxAccount.actions = [{ ...sign, defaultHotkey: null, hotkey: null, hotkeyable: false, flyout: false, active: false }];
   }
 
   function snapshot(): AppState {
@@ -269,7 +308,13 @@ function createMock() {
         signedIn = false;
         paused = false;
         log("info", id, "Signed out");
+      } else if (action === "cancel-sign-in") {
+        clearTimeout(signInTimer);
+        signingIn = false;
+        f.prompt = null;
+        log("info", id, "Sign-in cancelled");
       } else if (action === "sign-in") {
+        signingIn = true;
         f.prompt = {
           title: "Sign in to Xbox",
           message: "Open microsoft.com/link and enter this code.",
@@ -280,6 +325,7 @@ function createMock() {
         clearTimeout(signInTimer);
         signInTimer = setTimeout(() => {
           f.prompt = null;
+          signingIn = false;
           signedIn = true;
           refresh();
           log("info", id, "Signed in as Gamertag");

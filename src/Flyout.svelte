@@ -10,7 +10,7 @@
   let running = $state<Record<string, string>>({});
   let errors = $state<Record<string, string>>({});
 
-  const features = $derived((app.state?.features ?? []).filter((f) => f.enabled));
+  const features = $derived((app.state?.features ?? []).filter((f) => f.kind === "feature" && f.enabled));
 
   onMount(() => {
     startStore(false);

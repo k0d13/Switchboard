@@ -1,6 +1,6 @@
 //! Xbox mode and PC mode: switching the monitor, turning the Xbox on and off, and following it
 //! when it's turned on or off some other way. Its watcher also tells presence whether the Xbox is
-//! on.
+//! on. Turning the Xbox on and off through Xbox Live uses the Xbox account (`xbox_live::account`).
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::xbox_live::{self, Power, Shared};
-use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, FieldOption, Tone, option};
+use crate::core::feature::{ActionDef, Feature, FeatureInfo, Field, FieldOption, Kind, Tone, option};
 use crate::core::host::Ctx;
 use crate::core::worker::{StopToken, Worker};
 use crate::platform::ddc::{self, INPUT_SOURCE, Monitor};
@@ -37,7 +37,6 @@ struct Settings {
     /// Remembered whenever the Xbox answers, so finding it doesn't rely on broadcasts alone.
     xbox_address: String,
     xbox_name: String,
-    ms_client_id: String,
 }
 
 impl Default for Settings {
@@ -53,7 +52,6 @@ impl Default for Settings {
             xbox_boot_secs: 30,
             xbox_address: String::new(),
             xbox_name: String::new(),
-            ms_client_id: String::new(),
         }
     }
 }
@@ -98,11 +96,12 @@ fn remember(ctx: &Ctx, s: &Settings, console: &smartglass::Console) {
 }
 
 /// Turns the Xbox on or off through Xbox Live, the way the Xbox app does.
-fn cloud_power(ctx: &Ctx, shared: &Shared, s: &Settings, live_id: &str, on: bool) -> anyhow::Result<()> {
-    let Some(token) = shared.token(ctx, &s.ms_client_id) else {
-        bail!("Sign in to Xbox Live on the Xbox mode settings page first");
+fn cloud_power(ctx: &Ctx, shared: &Shared, live_id: &str, on: bool) -> anyhow::Result<()> {
+    let client_id = shared.client_id();
+    let Some(token) = shared.token(ctx, &client_id) else {
+        bail!("Sign in to Xbox under Accounts first");
     };
-    let mut xbox = xbox_live::Xbox::new(&s.ms_client_id);
+    let mut xbox = xbox_live::Xbox::new(&client_id);
     xbox.set_refresh_token(Some(token));
     let result = xbox.power(live_id, on).map_err(|e| {
         let remote_off = xbox.consoles().ok().and_then(|list| {
@@ -114,7 +113,7 @@ fn cloud_power(ctx: &Ctx, shared: &Shared, s: &Settings, live_id: &str, on: bool
         }
     });
     if let Some(token) = xbox.take_rotated() {
-        shared.save_token(ctx, &s.ms_client_id, Some(&token));
+        shared.save_token(ctx, &client_id, Some(&token));
         shared.auth_changed();
     }
     result
@@ -239,13 +238,13 @@ fn wake(state: &State, ctx: &Ctx, s: &Settings, live_id: &str) -> anyhow::Result
         state.shared.set_power(Power::On);
         return Ok(());
     }
-    if state.shared.token(ctx, &s.ms_client_id).is_none() {
-        bail!("The Xbox is off. Sign in on the Xbox mode settings page so Switchboard can turn it on, or turn it on yourself and the monitor switches over by itself.");
+    if state.shared.token(ctx, &state.shared.client_id()).is_none() {
+        bail!("The Xbox is off. Sign in to Xbox under Accounts so Switchboard can turn it on, or turn it on yourself and the monitor switches over by itself.");
     }
     ctx.info("Turning the Xbox on");
     // Series X|S consoles only wake through Xbox Live. The local packet is kept for older
     // consoles, and costs nothing.
-    if let Err(e) = cloud_power(ctx, &state.shared, s, live_id, true) {
+    if let Err(e) = cloud_power(ctx, &state.shared, live_id, true) {
         ctx.warn(e.to_string());
     }
     let deadline = Instant::now() + Duration::from_secs(s.xbox_boot_secs);
@@ -277,7 +276,7 @@ fn to_pc(state: &Arc<State>, ctx: &Ctx) -> anyhow::Result<()> {
             if smartglass::find(&live_id, s.address(), Duration::from_millis(800)).is_none() {
                 return;
             }
-            match cloud_power(&ctx, &state.shared, &s, &live_id, false) {
+            match cloud_power(&ctx, &state.shared, &live_id, false) {
                 Ok(()) => ctx.info("Turning the Xbox off"),
                 Err(e) => ctx.warn(e.to_string()),
             }
@@ -394,6 +393,8 @@ impl Feature for XboxMode {
             description: "Put your Xbox on a monitor while it's on, and give the monitor back when it's off",
             icon: "gamepad",
             enabled_by_default: true,
+            kind: Kind::Feature,
+            uses: &[xbox_live::ACCOUNT_ID],
         }
     }
 
@@ -410,7 +411,6 @@ impl Feature for XboxMode {
             "xboxBootSecs": d.xbox_boot_secs,
             "xboxAddress": d.xbox_address,
             "xboxName": d.xbox_name,
-            "msClientId": d.ms_client_id,
         })
     }
 
@@ -466,7 +466,7 @@ impl Feature for XboxMode {
 
         vec![
             Field::select("xboxLiveId", "Console", consoles)
-                .help("Only an Xbox that's on shows up here. To turn it on and off, sign in above, turn on Remote features in the Xbox's settings, and set its power mode to Sleep.")
+                .help("Only an Xbox that's on shows up here. To turn it on and off, sign in to Xbox under Accounts, turn on Remote features in the Xbox's settings, and set its power mode to Sleep.")
                 .section("Xbox"),
             Field::toggle("offInPcMode", "Turn the Xbox off when switching to PC mode").section("Xbox"),
             Field::select("monitorModel", "Monitor", monitors)
@@ -483,20 +483,14 @@ impl Feature for XboxMode {
                 .placeholder("Found automatically")
                 .help("Filled in when the Xbox is found. Change it if the Xbox isn't being noticed.")
                 .section("Advanced"),
-            Field::text("msClientId", "Microsoft client ID")
-                .placeholder("Xbox app's public client")
-                .help("Your own Azure app registration's client ID. Needs its own sign-in.")
-                .section("Advanced"),
         ]
     }
 
-    fn actions(&self, ctx: &Ctx) -> Vec<ActionDef> {
+    fn actions(&self, _ctx: &Ctx) -> Vec<ActionDef> {
         let mode = *self.state.mode.lock();
-        let s: Settings = ctx.settings();
         vec![
             ActionDef::new("xbox-mode", "Xbox mode").icon("gamepad").hotkey("Ctrl+Alt+X").active(mode == Some(Mode::Xbox)),
             ActionDef::new("pc-mode", "PC mode").icon("monitor").hotkey("Ctrl+Alt+P").active(mode == Some(Mode::Pc)),
-            self.state.shared.account_action(ctx, &s.ms_client_id),
         ]
     }
 
@@ -504,13 +498,7 @@ impl Feature for XboxMode {
         match action {
             "xbox-mode" => switch(&self.state, ctx, Mode::Xbox),
             "pc-mode" => switch(&self.state, ctx, Mode::Pc),
-            other => {
-                let s: Settings = ctx.settings();
-                if !self.state.shared.run_account_action(ctx, &s.ms_client_id, other)? {
-                    bail!("Unknown action {other}");
-                }
-                Ok(())
-            }
+            other => bail!("Unknown action {other}"),
         }
     }
 
@@ -525,8 +513,7 @@ impl Feature for XboxMode {
         ctx.refresh();
     }
 
-    fn stop(&self, ctx: &Ctx) {
-        self.state.shared.cancel_own_sign_in(ctx);
+    fn stop(&self, _ctx: &Ctx) {
         let worker = self.state.watch.lock().take();
         if let Some(w) = worker {
             w.stop();

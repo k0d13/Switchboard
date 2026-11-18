@@ -33,14 +33,18 @@ Copies new Xbox screenshots and recordings to the clipboard, so you can paste th
 - Needs **Automatically upload** on, in the console's Settings > Preferences > Capture & share.
 - Uses Xbox's unofficial media hub API, so it may need adjusting if Microsoft changes it.
 
-All three Xbox features share one Xbox Live sign-in, so signing in on any page signs in all of them. It uses a device code, shown right in the app, and is stored encrypted with DPAPI.
+### Accounts
+The accounts features rely on get their own section in Settings, above the features, and each feature's page links to the ones it uses.
+
+- **Xbox:** one Xbox Live sign-in shared by all three Xbox features. It uses a device code, shown right in the app, and is stored encrypted with DPAPI. The page shows who's signed in and notices an expired sign-in.
+- **Discord:** nothing to sign in to. Shows whether the Discord app is running and, while Xbox presence is connected, which account it's showing on.
 
 ## Using it
 
 - **Tray:** left click for the quick panel, right click for the menu.
 - **Hotkeys:** Ctrl+Alt+X for Xbox mode and Ctrl+Alt+P for PC mode by default, rebindable in Settings.
 - **Command line:** `switchboard run xbox.xbox-mode` runs any action, `switchboard flyout` opens the quick panel. Handy for a Stream Deck.
-- **Settings:** a page per feature, generated from the feature itself, plus a live log.
+- **Settings:** a page per account and per feature, generated from the item itself, plus a live log.
 
 ## Building
 

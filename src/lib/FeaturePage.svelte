@@ -7,7 +7,14 @@
   import Toggle from "./Toggle.svelte";
   import type { FeatureState } from "./types";
 
-  let { feature }: { feature: FeatureState } = $props();
+  import { app } from "./store.svelte";
+
+  let { feature, navigate }: { feature: FeatureState; navigate: (id: string) => void } = $props();
+
+  const isAccount = $derived(feature.kind === "account");
+  const used = $derived(
+    feature.uses.flatMap((id) => app.state?.features.find((f) => f.id === id) ?? []),
+  );
 
   let running = $state<string | null>(null);
   let errors = $state<Record<string, string>>({});
@@ -42,10 +49,12 @@
       <h1>{feature.name}</h1>
       <p>{feature.description}</p>
     </div>
-    <label class="enabled">
-      <span>{feature.enabled ? "On" : "Off"}</span>
-      <Toggle label="Enabled" checked={feature.enabled} onchange={toggle} />
-    </label>
+    {#if !isAccount}
+      <label class="enabled">
+        <span>{feature.enabled ? "On" : "Off"}</span>
+        <Toggle label="Enabled" checked={feature.enabled} onchange={toggle} />
+      </label>
+    {/if}
   </header>
 
   {#if toggleError}
@@ -54,8 +63,8 @@
 
   {#if feature.status}
     <div class="status card">
-      <span class="dot {feature.enabled ? feature.status.tone : 'off'}"></span>
-      <span>{feature.enabled ? feature.status.text : "Switched off"}</span>
+      <span class="dot {isAccount || feature.enabled ? feature.status.tone : 'off'}"></span>
+      <span>{isAccount || feature.enabled ? feature.status.text : "Switched off"}</span>
     </div>
   {/if}
 
@@ -63,10 +72,35 @@
     <PromptCard prompt={feature.prompt} />
   {/if}
 
-  <div class="body" class:disabled={!feature.enabled}>
+  <div class="body" class:disabled={!isAccount && !feature.enabled}>
+    {#if used.length}
+      <section>
+        <h2>Accounts</h2>
+        <div class="card list">
+          {#each used as acc (acc.id)}
+            <div class="arow">
+              <div class="aline">
+                <span class="aicon"><Icon name={acc.icon} size={16} /></span>
+                <div class="alabel">
+                  <span>{acc.name}</span>
+                  {#if acc.status}
+                    <span class="astatus">
+                      <span class="dot {acc.status.tone}"></span>
+                      <span>{acc.status.text}</span>
+                    </span>
+                  {/if}
+                </div>
+                <button type="button" class="btn small" onclick={() => navigate(acc.id)}>Manage</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     {#if feature.actions.length}
       <section>
-        <h2>Actions</h2>
+        {#if !isAccount}<h2>Actions</h2>{/if}
         <div class="card list">
           {#each feature.actions as a (a.id)}
             <div class="arow">
@@ -82,15 +116,17 @@
                 <button
                   type="button"
                   class="btn small"
-                  disabled={feature.busy || running !== null || !feature.enabled}
+                  disabled={feature.busy || running !== null || !(isAccount || feature.enabled)}
                   onclick={() => run(a.id)}
                 >
                   {#if running === a.id}
                     <Icon name="loader" size={14} />
+                  {:else if isAccount}
+                    <Icon name={a.icon} size={14} />
                   {:else}
                     <Icon name="play" size={12} />
                   {/if}
-                  Run
+                  {isAccount ? a.label : "Run"}
                 </button>
               </div>
               {#if errors[a.id]}
@@ -208,6 +244,14 @@
     flex: 1;
     min-width: 0;
     font-weight: 500;
+  }
+  .astatus {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-weight: 400;
+    color: var(--text-2);
   }
   .pill {
     padding: 1px 8px;
