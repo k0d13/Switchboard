@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tauri::{AppHandle, State, WebviewWindow};
-use tauri_plugin_autostart::ManagerExt;
 
 use crate::core::feature::Field;
 use crate::core::host::{AppState, Host};
@@ -54,10 +53,9 @@ pub fn set_hotkey(host: H, id: String, action: String, hotkey: Option<String>) -
 }
 
 #[tauri::command]
-pub async fn set_autostart(app: AppHandle, host: H<'_>, enabled: bool) -> Result<(), String> {
+pub async fn set_autostart(host: H<'_>, enabled: bool) -> Result<(), String> {
     blocking(&host, move |h| {
-        let al = app.autolaunch();
-        if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())?;
+        crate::platform::autostart::set(enabled).map_err(|e| e.to_string())?;
         h.changed();
         Ok(())
     })

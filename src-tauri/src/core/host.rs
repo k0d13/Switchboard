@@ -10,7 +10,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
 
 use super::feature::{ActionDef, Event, Feature, Field, Prompt, Status, Tone};
@@ -293,7 +292,7 @@ impl Host {
             .collect();
         AppState {
             version: env!("CARGO_PKG_VERSION"),
-            autostart: self.app.autolaunch().is_enabled().unwrap_or(false),
+            autostart: crate::platform::autostart::is_enabled(),
             features,
         }
     }

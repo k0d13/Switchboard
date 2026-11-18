@@ -7,7 +7,6 @@ use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_autostart::ManagerExt;
 
 use crate::core::feature::Tone;
 use crate::core::host::{AppState, Host};
@@ -40,8 +39,7 @@ fn on_menu(app: &AppHandle, id: &str) {
         "settings" => crate::ui::open_settings(app, None),
         "quit" => app.exit(0),
         "autostart" => {
-            let al = app.autolaunch();
-            let _ = if al.is_enabled().unwrap_or(false) { al.disable() } else { al.enable() };
+            let _ = crate::platform::autostart::set(!crate::platform::autostart::is_enabled());
             app.state::<Arc<Host>>().changed();
         }
         _ => {

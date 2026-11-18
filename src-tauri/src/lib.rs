@@ -9,7 +9,6 @@ mod ui;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, RunEvent};
-use tauri_plugin_autostart::MacosLauncher;
 
 use crate::core::host::Host;
 use crate::core::log::Level;
@@ -18,7 +17,6 @@ pub fn run() {
     let app = tauri::Builder::default()
         // Must be first: a second launch hands its arguments to the running copy and exits
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| handle_args(app, &argv, true)))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--background"])))
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(hotkeys::handler).build())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
