@@ -48,6 +48,7 @@ export interface Action {
   defaultHotkey: string | null;
   /** Whether this action can have a hotkey at all. */
   hotkeyable: boolean;
+  flyout: boolean;
   /** Highlight as the current state, e.g. "Xbox mode" while in Xbox mode. */
   active: boolean;
 }

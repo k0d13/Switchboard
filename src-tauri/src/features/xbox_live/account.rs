@@ -51,11 +51,11 @@ impl Shared {
     /// Sign in, Sign out or Cancel sign-in, whichever fits.
     pub fn account_action(&self, ctx: &Ctx, client_id: &str) -> ActionDef {
         if self.token(ctx, client_id).is_some() {
-            ActionDef::new("sign-out", "Sign out").icon("log-out").no_hotkey()
+            ActionDef::new("sign-out", "Sign out").icon("log-out").no_hotkey().no_flyout()
         } else if self.sign_in_pending() {
-            ActionDef::new("cancel-sign-in", "Cancel sign-in").icon("x").no_hotkey()
+            ActionDef::new("cancel-sign-in", "Cancel sign-in").icon("x").no_hotkey().no_flyout()
         } else {
-            ActionDef::new("sign-in", "Sign in").icon("log-in").no_hotkey()
+            ActionDef::new("sign-in", "Sign in").icon("log-in").no_hotkey().no_flyout()
         }
     }
 

@@ -19,10 +19,14 @@ const XSTS_MARGIN_SECS: u64 = 5 * 60;
 const XSTS_FALLBACK_SECS: u64 = 30 * 60;
 
 pub fn agent() -> Agent {
+    agent_with_timeout(Duration::from_secs(20))
+}
+
+fn agent_with_timeout(timeout: Duration) -> Agent {
     Agent::config_builder()
         .tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).build())
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(20)))
+        .timeout_global(Some(timeout))
         .build()
         .new_agent()
 }
@@ -379,6 +383,19 @@ impl Xbox {
         self.xbl("https://userpresence.xboxlive.com/users/me?level=all", "3")
     }
 
+    /// The newest captures of one kind, newest upload first. Only what the search returns: no
+    /// paging. `Err(Failed)` carries the status, or a snippet when the response has no `values`.
+    pub fn captures(&mut self, kind: CaptureKind) -> Result<Vec<Capture>, XboxError> {
+        let xuid = self.xsts()?.xuid;
+        let body = json!({ "max": CAPTURES_PER_SEARCH, "skip": 0, "query": format!("OwnerXuid eq {xuid}") });
+        let url = kind.search_url();
+        let v = self.xbl_request(url, MEDIAHUB_CONTRACT, Some(&body))?;
+        let mut list = parse_captures(&v, kind)
+            .ok_or_else(|| XboxError::Failed(format!("{} had no captures list: {}", host(url), snippet(&v))))?;
+        list.sort_by(|a, b| b.uploaded.cmp(&a.uploaded));
+        Ok(list)
+    }
+
     /// Cover art for a title, cached per title id (including misses). The second value is a
     /// warning to log when the lookup failed.
     pub fn game_image(&mut self, title_id: &str) -> (Option<String>, Option<String>) {
@@ -398,6 +415,99 @@ impl Xbox {
         };
         self.images.insert(title_id.to_string(), image.clone());
         (image, warning)
+    }
+}
+
+/// Contract version of the media hub's search. Unofficial, so this is the thing to change if the
+/// searches start failing.
+const MEDIAHUB_CONTRACT: &str = "3";
+/// How many of the newest captures of each kind to ask for.
+const CAPTURES_PER_SEARCH: u32 = 10;
+/// A recording can be hundreds of megabytes, so downloads get far longer than API calls.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureKind {
+    Screenshot,
+    Recording,
+}
+
+impl CaptureKind {
+    fn search_url(self) -> &'static str {
+        match self {
+            Self::Screenshot => "https://mediahub.xboxlive.com/screenshots/search",
+            Self::Recording => "https://mediahub.xboxlive.com/gameclips/search",
+        }
+    }
+
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Screenshot => "Screenshot",
+            Self::Recording => "Recording",
+        }
+    }
+}
+
+/// A screenshot or recording uploaded to Xbox network.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capture {
+    pub id: String,
+    pub kind: CaptureKind,
+    pub title: String,
+    /// Seconds since the epoch. Zero when the timestamp is missing or unreadable.
+    pub uploaded: u64,
+    pub captured: u64,
+    /// Signed and short-lived: use it straight after searching.
+    pub download: Option<String>,
+    pub size: Option<u64>,
+}
+
+/// Reads a search response. `None` if it has no `values` list, which means the API changed or
+/// the request was wrong rather than there being nothing to find. Entries without an ID are skipped.
+pub fn parse_captures(v: &Value, kind: CaptureKind) -> Option<Vec<Capture>> {
+    let values = v["values"].as_array()?;
+    Some(values.iter().filter_map(|c| parse_capture(c, kind)).collect())
+}
+
+fn parse_capture(c: &Value, kind: CaptureKind) -> Option<Capture> {
+    let id = c["contentId"].as_str().filter(|s| !s.is_empty())?.to_string();
+    let captured = c["captureDate"].as_str().and_then(parse_iso8601).unwrap_or(0);
+    let uploaded = c["uploadDate"].as_str().and_then(parse_iso8601).unwrap_or(captured);
+    // Plain "Download" only: there may be HDR variants alongside it.
+    let locator = c["contentLocators"]
+        .as_array()
+        .and_then(|l| l.iter().find(|l| l["locatorType"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("download"))));
+    Some(Capture {
+        id,
+        kind,
+        title: c["titleName"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Xbox").to_string(),
+        uploaded,
+        captured: if captured == 0 { uploaded } else { captured },
+        download: locator.and_then(|l| l["uri"].as_str()).map(str::to_string),
+        size: locator.and_then(|l| l["fileSize"].as_u64()),
+    })
+}
+
+/// Downloads a signed URL to `to`. Signed URLs carry no auth header and must stay out of logs.
+pub fn download(url: &str, to: &std::path::Path) -> Result<(), String> {
+    let agent = agent_with_timeout(DOWNLOAD_TIMEOUT);
+    let mut resp = agent.get(url).call().map_err(|e| format!("{}: {e}", host(url)))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(format!("{} → {status}", host(url)));
+    }
+    let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
+    let mut file = std::fs::File::create(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    std::io::copy(&mut reader, &mut file).map_err(|e| format!("{}: {e}", host(url)))?;
+    Ok(())
+}
+
+/// A short, single-line piece of a response for the log, so a changed API can be diagnosed.
+pub fn snippet(v: &Value) -> String {
+    let text = v.to_string();
+    match text.char_indices().nth(200) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text,
     }
 }
 
@@ -611,6 +721,64 @@ mod tests {
     /// Uses the app's saved sign-in to list consoles, then wakes or turns off the one named in
     /// `XBOX_POWER` ("on:<live id>" or "off:<live id>"), if set:
     /// `cargo test cloud_consoles -- --ignored --nocapture`
+    fn sample() -> Value {
+        json!({
+            "values": [
+                {
+                    "contentId": "aaaa-1111",
+                    "localId": "1",
+                    "titleName": "Halo Infinite",
+                    "captureDate": "2026-11-17T20:15:30.1234567Z",
+                    "uploadDate": "2026-11-17T20:16:10.5Z",
+                    "contentLocators": [
+                        { "locatorType": "Thumbnail_Small", "uri": "https://example.com/small.jpg" },
+                        { "locatorType": "DownloadHDR", "uri": "https://example.com/hdr.png" },
+                        { "locatorType": "Download", "uri": "https://example.com/full.png?sig=1", "fileSize": 2048 }
+                    ]
+                },
+                {
+                    "contentId": "bbbb-2222",
+                    "titleName": "  ",
+                    "uploadDate": "2026-11-17T21:00:00Z",
+                    "durationInSeconds": 30,
+                    "contentLocators": [{ "locatorType": "download", "uri": "https://example.com/clip.mp4" }]
+                },
+                { "titleName": "No id" },
+                { "contentId": "cccc-3333", "uploadDate": "2026-11-16T09:00:00Z" }
+            ]
+        })
+    }
+
+    #[test]
+    fn capture_search_responses_parse() {
+        let list = parse_captures(&sample(), CaptureKind::Screenshot).unwrap();
+        assert_eq!(list.len(), 3);
+        let first = &list[0];
+        assert_eq!(first.id, "aaaa-1111");
+        assert_eq!(first.title, "Halo Infinite");
+        assert_eq!(first.download.as_deref(), Some("https://example.com/full.png?sig=1"));
+        assert_eq!(first.size, Some(2048));
+        assert_eq!(first.captured, parse_iso8601("2026-11-17T20:15:30Z").unwrap());
+        assert_eq!(first.uploaded, parse_iso8601("2026-11-17T20:16:10Z").unwrap());
+        // Missing fields fall back instead of failing
+        assert_eq!(list[1].title, "Xbox");
+        assert_eq!(list[1].download.as_deref(), Some("https://example.com/clip.mp4"));
+        assert_eq!(list[1].captured, list[1].uploaded);
+        assert_eq!(list[2].download, None);
+    }
+
+    #[test]
+    fn a_response_without_values_is_not_an_empty_list() {
+        assert!(parse_captures(&json!({ "values": [] }), CaptureKind::Recording).unwrap().is_empty());
+        assert!(parse_captures(&json!({ "error": "nope" }), CaptureKind::Recording).is_none());
+    }
+
+    #[test]
+    fn snippets_are_short() {
+        let long = json!({ "x": "y".repeat(500) });
+        assert!(snippet(&long).chars().count() <= 201);
+    }
+
     #[test]
     #[ignore]
     fn cloud_consoles() {

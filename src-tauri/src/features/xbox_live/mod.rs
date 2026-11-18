@@ -10,6 +10,7 @@ mod api;
 pub use api::*;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
@@ -50,9 +51,40 @@ impl Shared {
         }
     }
 
+    /// How often to poll Xbox Live, if at all. `on` while the Xbox is on and `None` while it's off.
+    /// When Xbox mode isn't watching a console there's no telling, so `unattended` applies: the
+    /// user's "Check without Xbox mode" choice, `None` meaning don't.
+    pub fn poll_every(&self, on: Duration, unattended: Option<Duration>) -> Option<Duration> {
+        match self.power() {
+            Power::On => Some(on),
+            Power::Off => None,
+            Power::Unknown => unattended,
+        }
+    }
+
     pub fn set_power(&self, power: Power) {
         if self.power.swap(power as u8, Ordering::SeqCst) != power as u8 {
             self.nudge();
         }
+    }
+}
+
+/// Shown by the features that poll when there's nothing to tell them the Xbox is on.
+pub const NEEDS_XBOX_MODE: &str = "Turn on Xbox mode or Check without Xbox mode";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polling_follows_the_power_state() {
+        let (on, away) = (Duration::from_secs(5), Some(Duration::from_secs(15)));
+        let shared = Shared::default();
+        assert_eq!(shared.poll_every(on, away), away);
+        assert_eq!(shared.poll_every(on, None), None);
+        shared.set_power(Power::On);
+        assert_eq!(shared.poll_every(on, None), Some(on));
+        shared.set_power(Power::Off);
+        assert_eq!(shared.poll_every(on, away), None);
     }
 }

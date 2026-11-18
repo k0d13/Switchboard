@@ -55,6 +55,7 @@
 
   {#each features as f (f.id)}
     {@const locked = f.busy || !!running[f.id]}
+    {@const tiles = f.actions.filter((a) => a.flyout)}
     <section class="card feature">
       <div class="top">
         <span class="ficon"><Icon name={f.icon} size={18} /></span>
@@ -69,9 +70,9 @@
         </div>
       </div>
 
-      {#if f.actions.length}
+      {#if tiles.length}
         <div class="tiles">
-          {#each f.actions as a (a.id)}
+          {#each tiles as a (a.id)}
             {@const isRunning = running[f.id] === a.id}
             <button
               type="button"

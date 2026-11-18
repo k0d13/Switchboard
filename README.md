@@ -22,10 +22,18 @@ Puts an Xbox on a monitor shared with the PC whenever it's on, and gives the mon
 ### Xbox presence
 Shows what you're playing on Xbox in your Discord status.
 
-- Works on its own, without Xbox mode. It checks every 15 seconds by itself, or every 5 seconds and only while the Xbox is on when Xbox mode is also on with a console chosen.
+- Works on its own, without Xbox mode. It checks every 15 seconds by itself (unless you turn off Check without Xbox mode), or every 5 seconds and only while the Xbox is on when Xbox mode is also on with a console chosen.
 - Talks to the Discord client directly over its local pipe, so there's nothing else to install.
 
-Both share one Xbox Live sign-in, so signing in on either page signs in both. It uses a device code, shown right in the app, and is stored encrypted with DPAPI.
+### Xbox captures
+Copies new Xbox screenshots and recordings to the clipboard, so you can paste them straight into Discord.
+
+- Take one on the console and it uploads to Xbox network. Switchboard notices (every 10 seconds while the Xbox is on, every 30 without Xbox mode unless you turn off Check without Xbox mode, and for two minutes after the Xbox turns off), downloads it (screenshots to Pictures\Xbox and recordings to Videos\Xbox by default) and copies it like Win+PrtScn does. Screenshots paste as images, recordings as files, and a toast says what happened.
+- Captures already there when you turn it on are not treated as new. **Copy latest capture** grabs the newest one on demand, and **Open screenshots folder** opens where they go.
+- Needs **Automatically upload** on, in the console's Settings > Preferences > Capture & share.
+- Uses Xbox's unofficial media hub API, so it may need adjusting if Microsoft changes it.
+
+All three Xbox features share one Xbox Live sign-in, so signing in on any page signs in all of them. It uses a device code, shown right in the app, and is stored encrypted with DPAPI.
 
 ## Using it
 

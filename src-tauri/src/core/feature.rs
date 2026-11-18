@@ -26,13 +26,15 @@ pub struct ActionDef {
     /// Accelerator such as "Ctrl+Alt+X"; the user can rebind or clear it.
     pub default_hotkey: Option<&'static str>,
     pub hotkeyable: bool,
+    /// Shown as a tile in the flyout. Off for things that belong on the settings page, like signing out.
+    pub flyout: bool,
     /// Shown as the current state (e.g. "Xbox mode" while in Xbox mode).
     pub active: bool,
 }
 
 impl ActionDef {
     pub fn new(id: &'static str, label: impl Into<String>) -> Self {
-        Self { id, label: label.into(), icon: None, default_hotkey: None, hotkeyable: true, active: false }
+        Self { id, label: label.into(), icon: None, default_hotkey: None, hotkeyable: true, flyout: true, active: false }
     }
     pub fn icon(mut self, icon: &'static str) -> Self {
         self.icon = Some(icon);
@@ -44,6 +46,10 @@ impl ActionDef {
     }
     pub fn no_hotkey(mut self) -> Self {
         self.hotkeyable = false;
+        self
+    }
+    pub fn no_flyout(mut self) -> Self {
+        self.flyout = false;
         self
     }
     pub fn active(mut self, active: bool) -> Self {

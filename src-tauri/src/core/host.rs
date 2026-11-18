@@ -264,6 +264,7 @@ impl Host {
                         icon: a.icon,
                         default_hotkey: a.default_hotkey,
                         hotkeyable: a.hotkeyable,
+                        flyout: a.flyout,
                         active: a.active,
                     })
                     .collect();
@@ -344,6 +345,7 @@ pub struct ActionState {
     pub hotkey: Option<String>,
     pub default_hotkey: Option<&'static str>,
     pub hotkeyable: bool,
+    pub flyout: bool,
     pub active: bool,
 }
 

@@ -200,16 +200,16 @@ function createMock() {
           : null;
     const hotkey = (f: FeatureState, id: string) => f.actions.find((a) => a.id === id)?.hotkey;
     const signAction = signedIn
-      ? { id: "sign-out", label: "Sign out", icon: "log-out", defaultHotkey: null, hotkey: null, hotkeyable: false, active: false }
-      : { id: "sign-in", label: "Sign in", icon: "log-in", defaultHotkey: null, hotkey: null, hotkeyable: false, active: false };
+      ? { id: "sign-out", label: "Sign out", icon: "log-out", defaultHotkey: null, hotkey: null, hotkeyable: false, flyout: false, active: false }
+      : { id: "sign-in", label: "Sign in", icon: "log-in", defaultHotkey: null, hotkey: null, hotkeyable: false, flyout: false, active: false };
     xboxFeature.actions = [
-      { id: "xbox-mode", label: "Xbox mode", icon: "gamepad", defaultHotkey: "Ctrl+Alt+X", hotkey: hotkey(xboxFeature, "xbox-mode") ?? "Ctrl+Alt+X", hotkeyable: true, active: xbox },
-      { id: "pc-mode", label: "PC mode", icon: "monitor", defaultHotkey: "Ctrl+Alt+P", hotkey: hotkey(xboxFeature, "pc-mode") ?? "Ctrl+Alt+P", hotkeyable: true, active: !xbox },
+      { id: "xbox-mode", label: "Xbox mode", icon: "gamepad", defaultHotkey: "Ctrl+Alt+X", hotkey: hotkey(xboxFeature, "xbox-mode") ?? "Ctrl+Alt+X", hotkeyable: true, flyout: true, active: xbox },
+      { id: "pc-mode", label: "PC mode", icon: "monitor", defaultHotkey: "Ctrl+Alt+P", hotkey: hotkey(xboxFeature, "pc-mode") ?? "Ctrl+Alt+P", hotkeyable: true, flyout: true, active: !xbox },
       { ...signAction },
     ];
     presenceFeature.actions = signedIn
       ? [
-          { id: "pause", label: paused ? "Resume presence" : "Pause presence", icon: paused ? "play" : "pause", defaultHotkey: null, hotkey: hotkey(presenceFeature, "pause") ?? null, hotkeyable: true, active: paused },
+          { id: "pause", label: paused ? "Resume presence" : "Pause presence", icon: paused ? "play" : "pause", defaultHotkey: null, hotkey: hotkey(presenceFeature, "pause") ?? null, hotkeyable: true, flyout: true, active: paused },
           { ...signAction },
         ]
       : [{ ...signAction }];

@@ -27,7 +27,8 @@ const STOP_WAIT: Duration = Duration::from_secs(3);
 
 /// While the Xbox is on.
 const INTERVAL: Duration = Duration::from_secs(5);
-/// Without Xbox mode there's no telling when it's on, so check all the time, less often.
+/// Without Xbox mode there's no telling when it's on, so check all the time, less often (unless
+/// the user turned that off).
 const NO_CONSOLE_INTERVAL: Duration = Duration::from_secs(15);
 const RETRY: Duration = Duration::from_secs(15);
 const DISCORD_RECONNECT: Duration = Duration::from_secs(5);
@@ -42,6 +43,7 @@ const SLICE: Duration = Duration::from_millis(500);
 struct Settings {
     discord_client_id: String,
     ignored_titles: Vec<String>,
+    check_without_xbox_mode: bool,
     ms_client_id: String,
 }
 
@@ -51,6 +53,7 @@ impl Default for Settings {
             discord_client_id: String::new(),
             // Home, Store, Xbox app
             ignored_titles: ["750323071", "1022622766", "714681658"].map(String::from).to_vec(),
+            check_without_xbox_mode: true,
             ms_client_id: String::new(),
         }
     }
@@ -100,12 +103,21 @@ impl Feature for XboxPresence {
         json!({
             "discordClientId": d.discord_client_id,
             "ignoredTitles": d.ignored_titles,
+            "checkWithoutXboxMode": d.check_without_xbox_mode,
             "msClientId": d.ms_client_id,
         })
     }
 
     fn schema(&self, _ctx: &Ctx) -> Vec<Field> {
-        vec![
+        let mut fields = Vec::new();
+        // Once Xbox mode knows whether the Xbox is on, this has no effect
+        if self.shared.power() == Power::Unknown {
+            fields.push(
+                Field::toggle("checkWithoutXboxMode", "Check without Xbox mode")
+                    .help("Keep checking Xbox Live now and then, since nothing says when the Xbox is on"),
+            );
+        }
+        fields.extend([
             Field::list("ignoredTitles", "Ignored title IDs")
                 .help("Dashboard apps that shouldn't count as playing")
                 .section("Advanced"),
@@ -116,7 +128,8 @@ impl Feature for XboxPresence {
                 .placeholder("Xbox app's public client")
                 .help("Your own Azure app registration's client ID. Needs its own sign-in.")
                 .section("Advanced"),
-        ]
+        ]);
+        fields
     }
 
     fn actions(&self, ctx: &Ctx) -> Vec<ActionDef> {
@@ -310,12 +323,15 @@ impl Runner {
         }
 
         // Xbox mode nudges this worker when the Xbox turns on or off
-        let power = self.shared.power();
-        if power == Power::Off {
+        let unattended = settings.check_without_xbox_mode.then_some(NO_CONSOLE_INTERVAL);
+        let Some(interval) = self.shared.poll_every(INTERVAL, unattended) else {
             self.clear_activity();
-            self.status(None);
+            match self.shared.power() {
+                Power::Off => self.status(None),
+                _ => self.status(Some((xbox_live::NEEDS_XBOX_MODE, Tone::Idle))),
+            }
             return IDLE;
-        }
+        };
 
         let presence = match self.xbox.presence() {
             Ok(p) => p,
@@ -359,7 +375,7 @@ impl Runner {
             Some(g) => self.status(Some((&format!("Playing {}", g.name), Tone::Active))),
             None => self.status(None),
         }
-        if power == Power::On { INTERVAL } else { NO_CONSOLE_INTERVAL }
+        interval
     }
 
     fn apply_settings(&mut self, settings: &Settings) {
